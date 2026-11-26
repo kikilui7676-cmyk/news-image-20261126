@@ -1,68 +1,76 @@
 #!/usr/bin/env python3
-"""Copy entry.png to $MAKEFUN_OUTPUT_DIR (make.fun entrypoint).
+"""news-image-20261126 v4: copy the pre-rendered entry image to the output dir.
 
-Stdlib only. This file does not render anything: entry.png is a pre-rendered
-1024x1024 broadsheet (<=1 MiB) built in-session by render-ni26-v3.py.
-Run: MAKEFUN_OUTPUT_DIR=<dir> python3 main.py
+The image (entry.png, 1024x1024, one page summing up 26 November 2026's world
+news: 45 stories, 7 regions) is built by the author in this session and shipped
+in the repository. This program does no rendering and no network: it copies the
+file, then verifies the copy byte-for-byte (SHA-256) and checks the PNG header
+and dimensions before reporting success.
 """
+
 import hashlib
 import os
 import shutil
 import struct
 import sys
 
-MAX_BYTES = 1024 * 1024
-EXPECTED = (1024, 1024)
+SOURCE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "entry.png")
+EXPECTED_SIZE = 1024 * 1024  # kit limit: image at most 1 MiB, 1024x1024 px
 
 
-def png_dimensions(path):
-    with open(path, "rb") as fh:
-        header = fh.read(33)
-    if len(header) < 33 or header[:8] != b"\x89PNG\r\n\x1a\n":
-        raise ValueError("not a PNG file: %s" % path)
-    width, height = struct.unpack(">II", header[16:24])
-    return width, height
-
-
-def sha256_file(path):
+def sha256_of(path):
     digest = hashlib.sha256()
-    with open(path, "rb") as fh:
-        for chunk in iter(lambda: fh.read(65536), b""):
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(65536), b""):
             digest.update(chunk)
     return digest.hexdigest()
 
 
+def png_dimensions(path):
+    with open(path, "rb") as handle:
+        header = handle.read(33)
+    if header[:8] != b"\x89PNG\r\n\x1a\n":
+        raise ValueError("not a PNG file (bad signature)")
+    if header[12:16] != b"IHDR":
+        raise ValueError("not a PNG file (missing IHDR)")
+    width, height = struct.unpack(">II", header[16:24])
+    return width, height
+
+
 def main():
-    here = os.path.dirname(os.path.abspath(__file__))
-    src = os.path.join(here, "entry.png")
     out_dir = os.environ.get("MAKEFUN_OUTPUT_DIR")
     if not out_dir:
-        print("MAKEFUN_OUTPUT_DIR is not set; run as "
-              "MAKEFUN_OUTPUT_DIR=<dir> python3 main.py", file=sys.stderr)
-        return 2
-    size = os.path.getsize(src)
-    if size > MAX_BYTES:
-        print("entry.png is %d bytes, over the 1 MiB gate" % size, file=sys.stderr)
+        print("MAKEFUN_OUTPUT_DIR is not set", file=sys.stderr)
         return 1
-    dims = png_dimensions(src)
-    if dims != EXPECTED:
-        print("entry.png is %dx%d, expected 1024x1024" % dims, file=sys.stderr)
+    if not os.path.isfile(SOURCE):
+        print("entry.png missing next to main.py", file=sys.stderr)
         return 1
     os.makedirs(out_dir, exist_ok=True)
-    dst = os.path.join(out_dir, "entry.png")
-    shutil.copyfile(src, dst)
-    if os.path.getsize(dst) != size:
-        print("copied size differs from source", file=sys.stderr)
+    target = os.path.join(out_dir, "entry.png")
+    expected = sha256_of(SOURCE)
+    width, height = png_dimensions(SOURCE)
+    if (width, height) != (1024, 1024):
+        print(f"entry.png is {width}x{height}, expected 1024x1024",
+              file=sys.stderr)
         return 1
-    src_hash = sha256_file(src)
-    dst_hash = sha256_file(dst)
-    if src_hash != dst_hash:
-        print("sha256 mismatch after copy", file=sys.stderr)
+    shutil.copyfile(SOURCE, target)
+    actual = sha256_of(target)
+    if actual != expected:
+        print("copy verification failed: sha256 mismatch", file=sys.stderr)
         return 1
-    print("entry.png: %dx%d, %d bytes, sha256 %s" % (dims[0], dims[1], size, src_hash))
-    print("copied to %s" % dst)
+    copied_w, copied_h = png_dimensions(target)
+    if (copied_w, copied_h) != (1024, 1024):
+        print(f"copied file is {copied_w}x{copied_h}, expected 1024x1024",
+              file=sys.stderr)
+        return 1
+    size = os.path.getsize(target)
+    if size > EXPECTED_SIZE:
+        print(f"entry.png is {size} bytes, over the 1 MiB limit",
+              file=sys.stderr)
+        return 1
+    print(f"wrote {target} ({width}x{height}, {size} bytes, sha256 {actual})")
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())
