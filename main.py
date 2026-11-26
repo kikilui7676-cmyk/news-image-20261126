@@ -1,107 +1,65 @@
 #!/usr/bin/env python3
-"""News Image 20261126 — entry runner.
+"""news-image-20261126 v2 entrypoint.
 
-Reads the pre-rendered entry.png next to this script, verifies its
-integrity (SHA-256) and format gates (PNG header, max 1024x1024,
-max 1 MiB), then copies it byte-identical to
-$MAKEFUN_OUTPUT_DIR/entry.png (default ./output).
-
-Standard library only. No network, no clock, no randomness.
-Deterministic: the same input always produces the same output.
+Copies the pre-rendered front page (entry.png, built locally with Pillow) into
+the output directory the harness provides. Standard library only; no network,
+no rendering, no fonts at run time. Every gate below must pass or the program
+exits non-zero so a broken image can never be graded.
 """
 
 import hashlib
 import os
-import shutil
 import struct
 import sys
+from pathlib import Path
 
-EXPECTED_SHA256 = "9b5ffb01a97a21b24c43a2213149adadfcaf4f531c08508f553e1e742a143485"
-SOURCE_NAME = "entry.png"
-MAX_WIDTH = 1024
-MAX_HEIGHT = 1024
-MAX_BYTES = 1024 * 1024
+HERE = Path(__file__).resolve().parent
+SOURCE = HERE / "entry.png"
+
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+MAX_BYTES = 1_048_576
+EXPECT_WIDTH = 1024
+EXPECT_HEIGHT = 1024
 
 
 def fail(message):
-    print("error: %s" % message, file=sys.stderr)
+    print(f"main.py: FAIL: {message}", file=sys.stderr)
     return 1
 
 
-def read_png_dimensions(data):
-    """Return (width, height) from the IHDR chunk of a PNG byte string."""
-    if len(data) < 33:
-        raise ValueError("file too short to be a PNG")
-    if data[:8] != PNG_SIGNATURE:
-        raise ValueError("not a PNG file (bad signature)")
-    if data[12:16] != b"IHDR":
-        raise ValueError("not a PNG file (first chunk is not IHDR)")
-    width, height = struct.unpack(">II", data[16:24])
-    return width, height
-
-
 def main():
-    here = os.path.dirname(os.path.abspath(__file__))
-    source = os.path.join(here, SOURCE_NAME)
+    out_dir = os.environ.get("MAKEFUN_OUTPUT_DIR")
+    if not out_dir:
+        return fail("MAKEFUN_OUTPUT_DIR is not set")
+    if not SOURCE.is_file():
+        return fail(f"missing bundled image: {SOURCE}")
 
-    try:
-        with open(source, "rb") as handle:
-            data = handle.read()
-    except OSError as exc:
-        return fail("cannot read %s: %s" % (source, exc))
-
+    data = SOURCE.read_bytes()
     if len(data) > MAX_BYTES:
-        return fail("entry.png is %d bytes, over the 1 MiB limit" % len(data))
+        return fail(f"image is {len(data)} bytes, over the 1 MiB limit")
+    if data[:8] != PNG_SIGNATURE:
+        return fail("image does not start with the PNG signature")
+    if len(data) < 33 or data[12:16] != b"IHDR":
+        return fail("image has no IHDR chunk where the header belongs")
+    width, height = struct.unpack(">II", data[16:24])
+    if (width, height) != (EXPECT_WIDTH, EXPECT_HEIGHT):
+        return fail(f"image is {width}x{height}, expected 1024x1024")
+    bit_depth, color_type = data[24], data[25]
+    if bit_depth != 8 or color_type not in (2, 6):
+        return fail(f"unexpected IHDR bit depth {bit_depth} / color type {color_type}")
 
     digest = hashlib.sha256(data).hexdigest()
-    if digest != EXPECTED_SHA256:
-        return fail(
-            "sha256 mismatch: got %s, expected %s" % (digest, EXPECTED_SHA256)
-        )
-
-    try:
-        width, height = read_png_dimensions(data)
-    except ValueError as exc:
-        return fail("PNG check failed: %s" % exc)
-
-    if width > MAX_WIDTH or height > MAX_HEIGHT:
-        return fail(
-            "dimensions %dx%d exceed the %dx%d limit"
-            % (width, height, MAX_WIDTH, MAX_HEIGHT)
-        )
-
-    out_dir = os.environ.get("MAKEFUN_OUTPUT_DIR") or os.path.join(here, "output")
-    try:
-        os.makedirs(out_dir, exist_ok=True)
-    except OSError as exc:
-        return fail("cannot create output directory %s: %s" % (out_dir, exc))
-
-    dest = os.path.join(out_dir, SOURCE_NAME)
-    try:
-        with open(dest, "wb") as handle:
-            handle.write(data)
-    except OSError as exc:
-        return fail("cannot write %s: %s" % (dest, exc))
-
-    # Post-copy gate: re-read the written file and confirm it is
-    # byte-identical to the verified source before reporting success.
-    try:
-        with open(dest, "rb") as handle:
-            written = handle.read()
-    except OSError as exc:
-        return fail("cannot re-read %s for verification: %s" % (dest, exc))
+    target = Path(out_dir) / "entry.png"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(data)
+    written = target.read_bytes()
     if written != data:
-        return fail("output %s differs from verified source" % dest)
-    if hashlib.sha256(written).hexdigest() != EXPECTED_SHA256:
-        return fail("output sha256 mismatch after copy")
-
-    print(
-        "ok: entry.png %dx%d, %d bytes, sha256 %s -> %s"
-        % (width, height, len(data), digest, dest)
-    )
+        return fail("read-back mismatch: output bytes differ from the bundled image")
+    if hashlib.sha256(written).hexdigest() != digest:
+        return fail("read-back mismatch: output sha256 differs from the bundled image")
+    print(f"main.py: wrote {target} ({len(data)} bytes, sha256 {digest})")
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())
